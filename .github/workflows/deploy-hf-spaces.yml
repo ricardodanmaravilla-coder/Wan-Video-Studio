@@ -14,15 +14,20 @@ jobs:
     env:
       HF_USERNAME: ${{ inputs.hf_username }}
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      WORKER_TOKEN: ${{ secrets.WORKER_TOKEN }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Validate secret
+      - name: Validate secrets
         shell: bash
         run: |
           if [ -z "$HF_TOKEN" ]; then
             echo "Missing GitHub secret HF_TOKEN"
+            exit 1
+          fi
+          if [ -z "$WORKER_TOKEN" ]; then
+            echo "Missing GitHub secret WORKER_TOKEN"
             exit 1
           fi
 
@@ -62,3 +67,10 @@ jobs:
             git commit -m "Deploy Wan Video Studio I2V worker"
             git push origin main
           fi
+
+      - name: Configure Space secrets
+        shell: bash
+        run: |
+          python -m pip install --upgrade huggingface_hub
+          hf spaces secrets add "${HF_USERNAME}/wan-video-studio-t2v" -s "WORKER_TOKEN=${WORKER_TOKEN}" --token "$HF_TOKEN"
+          hf spaces secrets add "${HF_USERNAME}/wan-video-studio-i2v" -s "WORKER_TOKEN=${WORKER_TOKEN}" --token "$HF_TOKEN"
