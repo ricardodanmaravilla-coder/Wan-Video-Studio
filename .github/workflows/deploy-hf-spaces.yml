@@ -1,0 +1,64 @@
+name: Deploy Hugging Face Spaces
+
+on:
+  workflow_dispatch:
+    inputs:
+      hf_username:
+        description: "Hugging Face username"
+        required: true
+        type: string
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      HF_USERNAME: ${{ inputs.hf_username }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate secret
+        shell: bash
+        run: |
+          if [ -z "$HF_TOKEN" ]; then
+            echo "Missing GitHub secret HF_TOKEN"
+            exit 1
+          fi
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "wan-video-studio-bot"
+          git config --global user.email "actions@users.noreply.github.com"
+
+      - name: Deploy T2V Space
+        shell: bash
+        run: |
+          rm -rf /tmp/hf-t2v
+          git clone "https://${HF_USERNAME}:${HF_TOKEN}@huggingface.co/spaces/${HF_USERNAME}/wan-video-studio-t2v" /tmp/hf-t2v
+          find /tmp/hf-t2v -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+          cp -a hf_spaces/t2v/. /tmp/hf-t2v/
+          cd /tmp/hf-t2v
+          git add -A
+          if git diff --cached --quiet; then
+            echo "T2V Space already up to date"
+          else
+            git commit -m "Deploy Wan Video Studio T2V worker"
+            git push origin main
+          fi
+
+      - name: Deploy I2V Space
+        shell: bash
+        run: |
+          rm -rf /tmp/hf-i2v
+          git clone "https://${HF_USERNAME}:${HF_TOKEN}@huggingface.co/spaces/${HF_USERNAME}/wan-video-studio-i2v" /tmp/hf-i2v
+          find /tmp/hf-i2v -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+          cp -a hf_spaces/i2v/. /tmp/hf-i2v/
+          cd /tmp/hf-i2v
+          git add -A
+          if git diff --cached --quiet; then
+            echo "I2V Space already up to date"
+          else
+            git commit -m "Deploy Wan Video Studio I2V worker"
+            git push origin main
+          fi
