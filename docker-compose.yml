@@ -5,6 +5,7 @@ services:
       dockerfile: Dockerfile.worker
     environment:
       MOCK_MODE: "1"
+      WORKER_TOKEN: local-dev-token
     ports:
       - "7860:7860"
     volumes:
@@ -16,6 +17,7 @@ services:
       dockerfile: Dockerfile.web
     environment:
       WORKER_URL: http://worker:7860
+      WORKER_TOKEN: local-dev-token
     ports:
       - "8080:8080"
     depends_on:
