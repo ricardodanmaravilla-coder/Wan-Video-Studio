@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install app dependencies
+        run: pip install -r requirements.txt
+      - name: Compile Python sources
+        run: python -m compileall -q app worker
+      - name: Import FastAPI apps
+        env:
+          MOCK_MODE: '1'
+        run: |
+          python - <<'PY'
+          from app.main import app as web_app
+          from worker.app import app as worker_app
+          assert web_app.title == 'Wan Video Studio'
+          assert worker_app.title == 'Wan GPU Worker'
+          print('Import smoke test OK')
+          PY
