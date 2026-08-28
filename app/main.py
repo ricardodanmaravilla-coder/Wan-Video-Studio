@@ -23,11 +23,12 @@ OUT.mkdir(exist_ok=True)
 WORKER_MODE = os.getenv("WORKER_MODE", "http").strip().lower()
 WORKER_URL = os.getenv("WORKER_URL", "http://127.0.0.1:7860").rstrip("/")
 WORKER_TOKEN = os.getenv("WORKER_TOKEN", "").strip()
-HF_SPACE = os.getenv("HF_SPACE", "").strip()
+HF_SPACE_T2V = os.getenv("HF_SPACE_T2V", "").strip()
+HF_SPACE_I2V = os.getenv("HF_SPACE_I2V", "").strip()
 HF_TOKEN = os.getenv("HF_TOKEN", "").strip() or None
 SCENE_SECONDS = 5
 
-app = FastAPI(title="Wan Video Studio", version="0.3.0")
+app = FastAPI(title="Wan Video Studio", version="0.4.0")
 app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
 
 
@@ -105,17 +106,28 @@ def _resolve_gradio_output(result) -> Path:
 
 
 def generate_gradio_scene(prompt: str, aspect: str, reference: Path | None) -> Path:
-    if not HF_SPACE:
-        raise RuntimeError("HF_SPACE no está configurado")
-    client = Client(HF_SPACE, hf_token=HF_TOKEN)
-    ref = handle_file(str(reference)) if reference else None
-    result = client.predict(
-        prompt,
-        aspect,
-        ref,
-        WORKER_TOKEN,
-        api_name="/generate_video",
-    )
+    space = HF_SPACE_I2V if reference else HF_SPACE_T2V
+    if not space:
+        needed = "HF_SPACE_I2V" if reference else "HF_SPACE_T2V"
+        raise RuntimeError(f"{needed} no está configurado")
+
+    client = Client(space, hf_token=HF_TOKEN)
+    if reference:
+        result = client.predict(
+            prompt,
+            aspect,
+            handle_file(str(reference)),
+            WORKER_TOKEN,
+            api_name="/generate_video",
+        )
+    else:
+        result = client.predict(
+            prompt,
+            aspect,
+            WORKER_TOKEN,
+            api_name="/generate_video",
+        )
+
     path = _resolve_gradio_output(result)
     if not path.exists():
         raise RuntimeError("Gradio devolvió un archivo que no existe localmente")
@@ -164,8 +176,9 @@ async def health():
         return {
             "ok": True,
             "worker_mode": "gradio",
-            "hf_space": HF_SPACE or None,
-            "configured": bool(HF_SPACE),
+            "t2v_space": HF_SPACE_T2V or None,
+            "i2v_space": HF_SPACE_I2V or None,
+            "configured": bool(HF_SPACE_T2V and HF_SPACE_I2V),
         }
     worker = {"reachable": False}
     try:
