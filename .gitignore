@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.py[cod]
+.env
+outputs/
+worker_outputs/
+Wan2.2/
+Wan2.2-TI2V-5B/
+.DS_Store
