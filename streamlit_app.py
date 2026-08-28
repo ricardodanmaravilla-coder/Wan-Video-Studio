@@ -54,15 +54,47 @@ def split_story(prompt: str, duration: int, style: str) -> list[str]:
 
 
 def resolve_output(result) -> Path:
+    """Find a local output file in current and nested Gradio response formats."""
+    if isinstance(result, Path):
+        return result
+
     if isinstance(result, str):
         return Path(result)
+
     if isinstance(result, dict):
+        # Prefer the common Gradio FileData fields first.
         for key in ("path", "name"):
-            if result.get(key):
-                return Path(result[key])
-    if isinstance(result, (list, tuple)) and result:
-        return resolve_output(result[0])
-    raise RuntimeError(f"Salida de Gradio no reconocida: {type(result).__name__}")
+            value = result.get(key)
+            if isinstance(value, (str, Path)) and value:
+                return Path(value)
+
+        # Newer Gradio versions can wrap FileData in video/value/data containers.
+        preferred = ("video", "value", "data", "file", "output")
+        for key in preferred:
+            if key in result:
+                try:
+                    return resolve_output(result[key])
+                except RuntimeError:
+                    pass
+
+        # Last resort: recursively inspect every nested value.
+        for value in result.values():
+            try:
+                return resolve_output(value)
+            except RuntimeError:
+                continue
+
+    if isinstance(result, (list, tuple)):
+        for item in result:
+            try:
+                return resolve_output(item)
+            except RuntimeError:
+                continue
+
+    raise RuntimeError(
+        f"Salida de Gradio no reconocida: {type(result).__name__}. "
+        f"Estructura: {repr(result)[:500]}"
+    )
 
 
 def extract_last_frame(video: Path, image: Path) -> None:
@@ -134,7 +166,7 @@ def generate_scene(
 
     output = resolve_output(result)
     if not output.exists():
-        raise RuntimeError("Hugging Face devolvió un video que no existe localmente.")
+        raise RuntimeError(f"Hugging Face devolvió un archivo que no existe localmente: {output}")
     return output
 
 
