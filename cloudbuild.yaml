@@ -1,0 +1,16 @@
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build','-f','Dockerfile.web','-t','${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_IMAGE}:$COMMIT_SHA','.']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push','${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_IMAGE}:$COMMIT_SHA']
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args: ['run','deploy','${_SERVICE}','--image','${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_IMAGE}:$COMMIT_SHA','--region','${_REGION}','--platform','managed','--allow-unauthenticated','--set-env-vars','WORKER_URL=${_WORKER_URL}']
+substitutions:
+  _REGION: us-central1
+  _REPOSITORY: wan-video
+  _IMAGE: wan-video-web
+  _SERVICE: wan-video-studio
+  _WORKER_URL: http://127.0.0.1:7860
+options:
+  logging: CLOUD_LOGGING_ONLY
