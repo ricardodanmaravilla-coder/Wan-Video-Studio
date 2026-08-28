@@ -19,6 +19,7 @@ steps:
       - '--cpu=2'
       - '--timeout=900'
       - '--set-env-vars=WORKER_MODE=gradio,HF_SPACE_T2V=${_HF_SPACE_T2V},HF_SPACE_I2V=${_HF_SPACE_I2V}'
+      - '--set-secrets=WORKER_TOKEN=${_WORKER_SECRET}:latest'
 
 substitutions:
   _REGION: us-central1
@@ -27,6 +28,7 @@ substitutions:
   _SERVICE: wan-video-studio
   _HF_SPACE_T2V: RicasMaravilla/wan-video-studio-t2v
   _HF_SPACE_I2V: RicasMaravilla/wan-video-studio-i2v
+  _WORKER_SECRET: wan-worker-token
 
 options:
   logging: CLOUD_LOGGING_ONLY
