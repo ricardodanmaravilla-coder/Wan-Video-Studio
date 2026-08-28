@@ -10,11 +10,18 @@ WAN_CKPT = Path(os.getenv("WAN_CKPT", "./Wan2.2-TI2V-5B")).resolve()
 WAN_SIZE = os.getenv("WAN_SIZE", "1280*704")
 
 
-def generate_wan(prompt: str, output: Path, aspect: str = "16:9"):
+def generate_wan(
+    prompt: str,
+    output: Path,
+    aspect: str = "16:9",
+    reference_image: Path | None = None,
+):
     if not (WAN_REPO / "generate.py").exists():
         raise RuntimeError(f"No encuentro generate.py en WAN_REPO={WAN_REPO}")
     if not WAN_CKPT.exists():
         raise RuntimeError(f"No encuentro WAN_CKPT={WAN_CKPT}")
+    if reference_image is not None and not reference_image.exists():
+        raise RuntimeError(f"No encuentro la imagen de referencia: {reference_image}")
 
     size = WAN_SIZE
     if aspect == "9:16":
@@ -35,14 +42,23 @@ def generate_wan(prompt: str, output: Path, aspect: str = "16:9"):
         "--prompt", prompt,
     ]
 
+    # TI2V-5B usa T2V sin --image y cambia a I2V cuando recibe --image.
+    # Usamos el último frame de la escena anterior como ancla de continuidad.
+    if reference_image is not None:
+        cmd.extend(["--image", str(reference_image.resolve())])
+
     p = subprocess.run(cmd, cwd=str(WAN_REPO), text=True, capture_output=True)
     if p.returncode != 0:
-        raise RuntimeError("Wan falló:\n" + p.stderr[-2000:])
+        raise RuntimeError("Wan falló:\n" + p.stderr[-2500:])
 
     after = set(WAN_REPO.rglob("*.mp4"))
     created = list(after - before)
     if not created:
-        created = sorted(WAN_REPO.rglob("*.mp4"), key=lambda x: x.stat().st_mtime, reverse=True)[:1]
+        created = sorted(
+            WAN_REPO.rglob("*.mp4"),
+            key=lambda x: x.stat().st_mtime,
+            reverse=True,
+        )[:1]
     if not created:
         raise RuntimeError("Wan terminó pero no encontré ningún MP4 generado.")
 
