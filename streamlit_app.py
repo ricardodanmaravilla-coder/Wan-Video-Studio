@@ -99,6 +99,13 @@ def concat_videos(paths: list[Path], output: Path) -> None:
         )
 
 
+def make_client(space: str, hf_token: str | None) -> Client:
+    kwargs = {"verbose": False}
+    if hf_token:
+        kwargs["token"] = hf_token
+    return Client(space, **kwargs)
+
+
 def generate_scene(
     prompt: str,
     aspect: str,
@@ -107,7 +114,7 @@ def generate_scene(
     hf_token: str | None,
 ) -> Path:
     space = secret("HF_SPACE_I2V", DEFAULT_I2V) if reference else secret("HF_SPACE_T2V", DEFAULT_T2V)
-    client = Client(space, hf_token=hf_token or None, verbose=False)
+    client = make_client(space, hf_token)
 
     if reference:
         result = client.predict(
