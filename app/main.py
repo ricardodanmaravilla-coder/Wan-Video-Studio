@@ -28,7 +28,7 @@ HF_SPACE_I2V = os.getenv("HF_SPACE_I2V", "").strip()
 HF_TOKEN = os.getenv("HF_TOKEN", "").strip() or None
 SCENE_SECONDS = 5
 
-app = FastAPI(title="Wan Video Studio", version="0.4.0")
+app = FastAPI(title="Wan Video Studio", version="0.4.1")
 app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
 
 
@@ -105,13 +105,20 @@ def _resolve_gradio_output(result) -> Path:
     raise RuntimeError(f"Salida Gradio no reconocida: {type(result).__name__}")
 
 
+def _make_gradio_client(space: str) -> Client:
+    kwargs = {}
+    if HF_TOKEN:
+        kwargs["token"] = HF_TOKEN
+    return Client(space, **kwargs)
+
+
 def generate_gradio_scene(prompt: str, aspect: str, reference: Path | None) -> Path:
     space = HF_SPACE_I2V if reference else HF_SPACE_T2V
     if not space:
         needed = "HF_SPACE_I2V" if reference else "HF_SPACE_T2V"
         raise RuntimeError(f"{needed} no está configurado")
 
-    client = Client(space, hf_token=HF_TOKEN)
+    client = _make_gradio_client(space)
     if reference:
         result = client.predict(
             prompt,
