@@ -1,0 +1,28 @@
+services:
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    environment:
+      MOCK_MODE: "1"
+    ports:
+      - "7860:7860"
+    volumes:
+      - worker-data:/app/worker_outputs
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    environment:
+      WORKER_URL: http://worker:7860
+    ports:
+      - "8080:8080"
+    depends_on:
+      - worker
+    volumes:
+      - output-data:/app/outputs
+
+volumes:
+  worker-data:
+  output-data:
