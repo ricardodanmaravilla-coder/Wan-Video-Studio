@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wan Video Studio</title>
+<style>
+:root{font-family:Inter,system-ui,Arial,sans-serif;color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#090b10;color:#f5f7fb;min-height:100vh}.wrap{max-width:980px;margin:auto;padding:36px 20px}.hero{padding:28px 0}.badge{display:inline-block;padding:7px 11px;border:1px solid #343946;border-radius:999px;color:#c7cbd6;font-size:13px}h1{font-size:clamp(38px,7vw,72px);line-height:.98;margin:18px 0 14px;letter-spacing:-3px}.sub{color:#a8afbd;font-size:18px;max-width:720px;line-height:1.55}.card{background:#10141c;border:1px solid #262c37;border-radius:22px;padding:22px;box-shadow:0 20px 80px #0008}textarea{width:100%;min-height:150px;resize:vertical;border:1px solid #303744;background:#0b0f15;color:#fff;border-radius:15px;padding:17px;font:inherit;font-size:16px;outline:none}.row{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:14px}label{font-size:12px;color:#9199a8;display:block;margin:0 0 7px}select{width:100%;background:#0b0f15;color:#fff;border:1px solid #303744;border-radius:11px;padding:12px}button{margin-top:18px;width:100%;padding:15px;border:0;border-radius:13px;font-weight:800;font-size:16px;cursor:pointer}button:disabled{opacity:.5;cursor:wait}#status{margin:15px 2px;color:#aeb6c4}video{width:100%;border-radius:16px;margin-top:12px;background:#000;display:none}.meta{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px;color:#838c9c;font-size:13px}@media(max-width:650px){.row{grid-template-columns:1fr}h1{letter-spacing:-2px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="hero">
+    <span class="badge">WAN VIDEO STUDIO · MVP</span>
+    <h1>Crea tu video con IA.</h1>
+    <div class="sub">Describe una historia. La aplicación la divide en escenas, las genera y construye un solo video final.</div>
+  </div>
+  <div class="card">
+    <textarea id="prompt" placeholder="Ejemplo: Una camioneta clásica roja recorre un pequeño pueblo mexicano bajo una lluvia ligera al atardecer..."></textarea>
+    <div class="row">
+      <div><label>Duración</label><select id="duration"><option value="5">5 segundos</option><option value="10">10 segundos</option><option value="15">15 segundos</option><option value="20">20 segundos</option><option value="25">25 segundos</option><option value="30" selected>30 segundos</option></select></div>
+      <div><label>Formato</label><select id="aspect"><option>16:9</option><option>9:16</option><option>1:1</option></select></div>
+      <div><label>Estilo</label><select id="style"><option value="cinematic">Cinematográfico</option><option value="realistic">Realista</option><option value="commercial">Comercial</option><option value="documentary">Documental</option><option value="anime">Anime</option></select></div>
+    </div>
+    <button id="go">GENERAR VIDEO</button>
+    <div id="status"></div>
+    <video id="video" controls playsinline></video>
+    <div class="meta"><span>Motor modular</span><span>•</span><span>Wan 2.2 preparado</span><span>•</span><span>Hasta 30 s</span></div>
+  </div>
+</div>
+<script>
+const $=s=>document.querySelector(s);$("#go").onclick=async()=>{const prompt=$("#prompt").value.trim();if(prompt.length<3){$("#status").textContent="Escribe una descripción.";return;}$("#go").disabled=true;$("#video").style.display="none";$("#status").textContent="Generando escenas y construyendo el video…";try{const r=await fetch("/api/generate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({prompt,duration:Number($("#duration").value),aspect:$("#aspect").value,style:$("#style").value})});const data=await r.json();if(!r.ok)throw new Error(data.detail||"Error desconocido");$("#status").textContent=`Listo · ${data.scenes} escena(s)`;$("#video").src=data.video_url+"?t="+Date.now();$("#video").style.display="block";}catch(e){$("#status").textContent="Error: "+e.message;}finally{$("#go").disabled=false;}};
+</script>
+</body></html>
