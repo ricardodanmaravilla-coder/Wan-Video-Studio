@@ -1,0 +1,10 @@
+spaces
+gradio>=5.0
+torch>=2.8.0
+diffusers>=0.40.0
+transformers>=4.56.0
+accelerate>=1.10.0
+sentencepiece
+ftfy
+imageio[ffmpeg]
+Pillow
