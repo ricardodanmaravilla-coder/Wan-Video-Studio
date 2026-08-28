@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import base64
 import os
-import uuid
-import shutil
 import subprocess
+import uuid
 from pathlib import Path
 
 import httpx
@@ -18,8 +18,10 @@ OUT = BASE / "outputs"
 OUT.mkdir(exist_ok=True)
 
 WORKER_URL = os.getenv("WORKER_URL", "http://127.0.0.1:7860").rstrip("/")
+WORKER_TOKEN = os.getenv("WORKER_TOKEN", "").strip()
+SCENE_SECONDS = 5
 
-app = FastAPI(title="Wan Video Studio", version="0.1.0")
+app = FastAPI(title="Wan Video Studio", version="0.2.0")
 app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
 
 
@@ -30,8 +32,14 @@ class GenerateRequest(BaseModel):
     style: str = Field(default="cinematic")
 
 
+def worker_headers() -> dict[str, str]:
+    if not WORKER_TOKEN:
+        return {}
+    return {"Authorization": f"Bearer {WORKER_TOKEN}"}
+
+
 def split_story(prompt: str, duration: int, style: str) -> list[str]:
-    count = max(1, round(duration / 5))
+    count = max(1, round(duration / SCENE_SECONDS))
     camera = [
         "wide establishing shot",
         "medium tracking shot",
@@ -40,14 +48,28 @@ def split_story(prompt: str, duration: int, style: str) -> list[str]:
         "cinematic low-angle shot",
         "final wide hero shot",
     ]
-    scenes = []
-    for i in range(count):
-        scenes.append(
+    return [
+        (
             f"{prompt}. Scene {i+1}/{count}. {camera[i % len(camera)]}. "
-            f"{style} style. Natural coherent motion. Maintain the same subjects, "
-            f"wardrobe, colors, environment and lighting continuity."
+            f"{style} style. Natural coherent motion. Keep exactly the same main subjects, "
+            "face identity, body proportions, wardrobe, colors, props, environment, time of day "
+            "and lighting as the previous scene. Avoid abrupt visual changes."
         )
-    return scenes
+        for i in range(count)
+    ]
+
+
+def extract_last_frame(video: Path, image: Path) -> None:
+    cmd = [
+        "ffmpeg", "-y", "-sseof", "-0.12", "-i", str(video),
+        "-frames:v", "1", "-q:v", "2", str(image),
+    ]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True)
+    except FileNotFoundError:
+        raise HTTPException(500, "FFmpeg no está instalado o no está en PATH.")
+    except subprocess.CalledProcessError as e:
+        raise HTTPException(500, f"No pude extraer el último frame: {e.stderr.decode(errors='ignore')[-800:]}")
 
 
 def concat_videos(paths: list[Path], output: Path) -> None:
@@ -60,8 +82,7 @@ def concat_videos(paths: list[Path], output: Path) -> None:
         "ffmpeg", "-y", "-f", "concat", "-safe", "0",
         "-i", str(list_file),
         "-c:v", "libx264", "-pix_fmt", "yuv420p",
-        "-movflags", "+faststart",
-        str(output),
+        "-movflags", "+faststart", str(output),
     ]
     try:
         subprocess.run(cmd, check=True, capture_output=True)
@@ -77,8 +98,16 @@ def home():
 
 
 @app.get("/health")
-def health():
-    return {"ok": True, "worker": WORKER_URL}
+async def health():
+    worker = {"reachable": False}
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            r = await client.get(f"{WORKER_URL}/health")
+            r.raise_for_status()
+            worker = {"reachable": True, "details": r.json()}
+    except Exception as e:
+        worker = {"reachable": False, "error": str(e)}
+    return {"ok": True, "worker_url": WORKER_URL, "worker": worker}
 
 
 @app.post("/api/generate")
@@ -89,32 +118,43 @@ async def generate(req: GenerateRequest):
 
     scenes = split_story(req.prompt, req.duration, req.style)
     scene_paths: list[Path] = []
+    previous_frame_b64: str | None = None
 
-    async with httpx.AsyncClient(timeout=1800) as client:
+    headers = worker_headers()
+    async with httpx.AsyncClient(timeout=1800, headers=headers) as client:
         for idx, scene_prompt in enumerate(scenes, start=1):
             payload = {
                 "prompt": scene_prompt,
                 "scene": idx,
                 "aspect": req.aspect,
                 "job_id": job_id,
+                "reference_image_b64": previous_frame_b64,
             }
             try:
                 r = await client.post(f"{WORKER_URL}/generate", json=payload)
                 r.raise_for_status()
+                data = r.json()
+
+                download_url = data.get("download_url")
+                if not download_url:
+                    raise RuntimeError("El worker no devolvió download_url")
+                if download_url.startswith("/"):
+                    download_url = f"{WORKER_URL}{download_url}"
+
+                vr = await client.get(download_url)
+                vr.raise_for_status()
             except Exception as e:
                 raise HTTPException(502, f"Worker GPU falló en escena {idx}: {e}")
 
-            data = r.json()
-            remote_path = Path(data["path"])
-            if not remote_path.exists():
-                raise HTTPException(
-                    502,
-                    "El worker respondió, pero el archivo no es accesible desde este host. "
-                    "En despliegue remoto se cambiará por descarga HTTP/objeto storage."
-                )
             local_path = job_dir / f"scene_{idx:02d}.mp4"
-            shutil.copy2(remote_path, local_path)
+            local_path.write_bytes(vr.content)
             scene_paths.append(local_path)
+
+            # La siguiente escena se condiciona con el último frame de esta escena.
+            if idx < len(scenes):
+                last_frame = job_dir / f"scene_{idx:02d}_last.jpg"
+                extract_last_frame(local_path, last_frame)
+                previous_frame_b64 = base64.b64encode(last_frame.read_bytes()).decode("ascii")
 
     final_path = job_dir / "final.mp4"
     concat_videos(scene_paths, final_path)
@@ -122,6 +162,7 @@ async def generate(req: GenerateRequest):
     return {
         "job_id": job_id,
         "scenes": len(scenes),
+        "continuity": len(scenes) > 1,
         "video_url": f"/api/video/{job_id}",
     }
 
