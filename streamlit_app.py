@@ -7,6 +7,7 @@ from pathlib import Path
 
 import streamlit as st
 from gradio_client import Client, handle_file
+from gtts import gTTS
 
 SCENE_SECONDS = 5
 DEFAULT_T2V = "RicasMaravilla/wan-video-studio-t2v"
@@ -62,13 +63,11 @@ def resolve_output(result) -> Path:
         return Path(result)
 
     if isinstance(result, dict):
-        # Prefer the common Gradio FileData fields first.
         for key in ("path", "name"):
             value = result.get(key)
             if isinstance(value, (str, Path)) and value:
                 return Path(value)
 
-        # Newer Gradio versions can wrap FileData in video/value/data containers.
         preferred = ("video", "value", "data", "file", "output")
         for key in preferred:
             if key in result:
@@ -77,7 +76,6 @@ def resolve_output(result) -> Path:
                 except RuntimeError:
                     pass
 
-        # Last resort: recursively inspect every nested value.
         for value in result.values():
             try:
                 return resolve_output(value)
@@ -131,6 +129,34 @@ def concat_videos(paths: list[Path], output: Path) -> None:
         )
 
 
+def add_narration(video: Path, text: str, output: Path) -> None:
+    narration_mp3 = output.with_suffix(".mp3")
+    try:
+        gTTS(text=text, lang="es", tld="com.mx").save(str(narration_mp3))
+    except Exception as exc:
+        raise RuntimeError(f"No se pudo generar la narración: {exc}") from exc
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", str(video),
+        "-i", str(narration_mp3),
+        "-map", "0:v:0",
+        "-map", "1:a:0",
+        "-c:v", "copy",
+        "-c:a", "aac",
+        "-b:a", "160k",
+        "-shortest",
+        "-movflags", "+faststart",
+        str(output),
+    ]
+    completed = subprocess.run(cmd, capture_output=True)
+    if completed.returncode != 0:
+        raise RuntimeError(
+            "FFmpeg no pudo añadir la narración: "
+            + completed.stderr.decode(errors="ignore")[-700:]
+        )
+
+
 def make_client(space: str, hf_token: str | None) -> Client:
     kwargs = {"verbose": False}
     if hf_token:
@@ -170,7 +196,14 @@ def generate_scene(
     return output
 
 
-def run_generation(prompt: str, duration: int, aspect: str, style: str) -> tuple[bytes, int]:
+def run_generation(
+    prompt: str,
+    duration: int,
+    aspect: str,
+    style: str,
+    audio_mode: str,
+    narration_text: str,
+) -> tuple[bytes, int, bool]:
     worker_token = secret("WORKER_TOKEN")
     hf_token = secret("HF_TOKEN") or None
     if not worker_token:
@@ -208,13 +241,23 @@ def run_generation(prompt: str, duration: int, aspect: str, style: str) -> tuple
             )
 
         status.info("Uniendo escenas con FFmpeg…")
-        final = work / "wan_video_final.mp4"
-        concat_videos(scene_paths, final)
+        silent_final = work / "wan_video_silent.mp4"
+        concat_videos(scene_paths, silent_final)
+
+        has_audio = audio_mode == "Narración automática"
+        if has_audio:
+            status.info("Generando narración en español y añadiendo audio…")
+            final = work / "wan_video_final.mp4"
+            voice_text = narration_text.strip() or prompt.strip()
+            add_narration(silent_final, voice_text, final)
+        else:
+            final = silent_final
+
         data = final.read_bytes()
 
     progress.progress(1.0, text="Video terminado")
     status.success("Generación completada")
-    return data, len(scenes)
+    return data, len(scenes), has_audio
 
 
 st.markdown(
@@ -228,7 +271,7 @@ st.markdown(
 )
 
 st.title("🎬 Wan Video Studio")
-st.caption("Generación de video con Wan 2.2 + Hugging Face ZeroGPU · continuidad automática entre escenas")
+st.caption("Generación de video con Wan 2.2 + Hugging Face ZeroGPU · continuidad automática · audio opcional")
 
 with st.sidebar:
     st.subheader("Configuración")
@@ -239,6 +282,7 @@ with st.sidebar:
         ["cinematic", "realistic", "commercial", "documentary", "anime"],
         index=0,
     )
+    audio_mode = st.selectbox("Audio", ["Narración automática", "Sin audio"], index=0)
     st.divider()
     st.caption("Para pruebas iniciales recomiendo 5 s. Los videos largos consumen varias llamadas a ZeroGPU.")
 
@@ -248,6 +292,14 @@ prompt = st.text_area(
     placeholder="Ejemplo: Un automóvil deportivo rojo recorriendo una carretera de montaña al amanecer, cámara cinematográfica…",
 )
 
+narration_text = ""
+if audio_mode == "Narración automática":
+    narration_text = st.text_area(
+        "Texto de narración (opcional)",
+        height=100,
+        placeholder="Si lo dejas vacío, se narrará la descripción del video.",
+    )
+
 generate = st.button("✨ Generar video", type="primary", use_container_width=True)
 
 if generate:
@@ -255,19 +307,23 @@ if generate:
         st.error("Escribe una descripción del video.")
     else:
         try:
-            video_bytes, scene_count = run_generation(prompt.strip(), duration, aspect, style)
+            video_bytes, scene_count, has_audio = run_generation(
+                prompt.strip(), duration, aspect, style, audio_mode, narration_text
+            )
             st.session_state["wan_video"] = video_bytes
             st.session_state["wan_scene_count"] = scene_count
+            st.session_state["wan_has_audio"] = has_audio
         except Exception as exc:
             st.error(f"La generación falló: {exc}")
 
 if "wan_video" in st.session_state:
     st.subheader("Resultado")
     st.video(st.session_state["wan_video"], format="video/mp4")
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     c1.metric("Duración objetivo", f"{duration} s")
     c2.metric("Escenas", st.session_state.get("wan_scene_count", 1))
     c3.metric("Continuidad", "I2V activa" if st.session_state.get("wan_scene_count", 1) > 1 else "T2V")
+    c4.metric("Audio", "Narración" if st.session_state.get("wan_has_audio") else "Sin audio")
     st.download_button(
         "⬇️ Descargar MP4",
         data=st.session_state["wan_video"],
