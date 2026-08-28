@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import os
+import shutil
 import subprocess
 import uuid
 from pathlib import Path
@@ -10,6 +12,7 @@ import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from gradio_client import Client, handle_file
 from pydantic import BaseModel, Field
 
 BASE = Path(__file__).resolve().parent.parent
@@ -17,11 +20,14 @@ STATIC = BASE / "app" / "static"
 OUT = BASE / "outputs"
 OUT.mkdir(exist_ok=True)
 
+WORKER_MODE = os.getenv("WORKER_MODE", "http").strip().lower()
 WORKER_URL = os.getenv("WORKER_URL", "http://127.0.0.1:7860").rstrip("/")
 WORKER_TOKEN = os.getenv("WORKER_TOKEN", "").strip()
+HF_SPACE = os.getenv("HF_SPACE", "").strip()
+HF_TOKEN = os.getenv("HF_TOKEN", "").strip() or None
 SCENE_SECONDS = 5
 
-app = FastAPI(title="Wan Video Studio", version="0.2.0")
+app = FastAPI(title="Wan Video Studio", version="0.3.0")
 app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
 
 
@@ -30,12 +36,6 @@ class GenerateRequest(BaseModel):
     duration: int = Field(default=30, ge=5, le=30)
     aspect: str = Field(default="16:9")
     style: str = Field(default="cinematic")
-
-
-def worker_headers() -> dict[str, str]:
-    if not WORKER_TOKEN:
-        return {}
-    return {"Authorization": f"Bearer {WORKER_TOKEN}"}
 
 
 def split_story(prompt: str, duration: int, style: str) -> list[str]:
@@ -92,6 +92,67 @@ def concat_videos(paths: list[Path], output: Path) -> None:
         raise HTTPException(500, f"FFmpeg falló: {e.stderr.decode(errors='ignore')[-800:]}")
 
 
+def _resolve_gradio_output(result) -> Path:
+    if isinstance(result, str):
+        return Path(result)
+    if isinstance(result, dict):
+        for key in ("path", "name"):
+            if result.get(key):
+                return Path(result[key])
+    if isinstance(result, (list, tuple)) and result:
+        return _resolve_gradio_output(result[0])
+    raise RuntimeError(f"Salida Gradio no reconocida: {type(result).__name__}")
+
+
+def generate_gradio_scene(prompt: str, aspect: str, reference: Path | None) -> Path:
+    if not HF_SPACE:
+        raise RuntimeError("HF_SPACE no está configurado")
+    client = Client(HF_SPACE, hf_token=HF_TOKEN)
+    ref = handle_file(str(reference)) if reference else None
+    result = client.predict(
+        prompt,
+        aspect,
+        ref,
+        WORKER_TOKEN,
+        api_name="/generate_video",
+    )
+    path = _resolve_gradio_output(result)
+    if not path.exists():
+        raise RuntimeError("Gradio devolvió un archivo que no existe localmente")
+    return path
+
+
+async def generate_http_scene(
+    client: httpx.AsyncClient,
+    prompt: str,
+    idx: int,
+    aspect: str,
+    job_id: str,
+    reference: Path | None,
+) -> bytes:
+    reference_b64 = None
+    if reference:
+        reference_b64 = base64.b64encode(reference.read_bytes()).decode("ascii")
+    payload = {
+        "prompt": prompt,
+        "scene": idx,
+        "aspect": aspect,
+        "job_id": job_id,
+        "reference_image_b64": reference_b64,
+    }
+    r = await client.post(f"{WORKER_URL}/generate", json=payload)
+    r.raise_for_status()
+    data = r.json()
+    download_url = data.get("download_url")
+    if not download_url:
+        raise RuntimeError("El worker no devolvió download_url")
+    if download_url.startswith("/"):
+        download_url = f"{WORKER_URL}{download_url}"
+    vr = await client.get(download_url)
+    vr.raise_for_status()
+    return vr.content
+
+
 @app.get("/")
 def home():
     return FileResponse(STATIC / "index.html")
@@ -99,15 +160,23 @@ def home():
 
 @app.get("/health")
 async def health():
+    if WORKER_MODE == "gradio":
+        return {
+            "ok": True,
+            "worker_mode": "gradio",
+            "hf_space": HF_SPACE or None,
+            "configured": bool(HF_SPACE),
+        }
     worker = {"reachable": False}
     try:
-        async with httpx.AsyncClient(timeout=5) as client:
+        headers = {"Authorization": f"Bearer {WORKER_TOKEN}"} if WORKER_TOKEN else {}
+        async with httpx.AsyncClient(timeout=5, headers=headers) as client:
             r = await client.get(f"{WORKER_URL}/health")
             r.raise_for_status()
             worker = {"reachable": True, "details": r.json()}
     except Exception as e:
         worker = {"reachable": False, "error": str(e)}
-    return {"ok": True, "worker_url": WORKER_URL, "worker": worker}
+    return {"ok": True, "worker_mode": "http", "worker_url": WORKER_URL, "worker": worker}
 
 
 @app.post("/api/generate")
@@ -115,54 +184,48 @@ async def generate(req: GenerateRequest):
     job_id = uuid.uuid4().hex[:12]
     job_dir = OUT / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
-
     scenes = split_story(req.prompt, req.duration, req.style)
     scene_paths: list[Path] = []
-    previous_frame_b64: str | None = None
+    previous_frame: Path | None = None
 
-    headers = worker_headers()
-    async with httpx.AsyncClient(timeout=1800, headers=headers) as client:
+    headers = {"Authorization": f"Bearer {WORKER_TOKEN}"} if WORKER_TOKEN else {}
+    async with httpx.AsyncClient(timeout=1800, headers=headers) as http_client:
         for idx, scene_prompt in enumerate(scenes, start=1):
-            payload = {
-                "prompt": scene_prompt,
-                "scene": idx,
-                "aspect": req.aspect,
-                "job_id": job_id,
-                "reference_image_b64": previous_frame_b64,
-            }
+            local_path = job_dir / f"scene_{idx:02d}.mp4"
             try:
-                r = await client.post(f"{WORKER_URL}/generate", json=payload)
-                r.raise_for_status()
-                data = r.json()
-
-                download_url = data.get("download_url")
-                if not download_url:
-                    raise RuntimeError("El worker no devolvió download_url")
-                if download_url.startswith("/"):
-                    download_url = f"{WORKER_URL}{download_url}"
-
-                vr = await client.get(download_url)
-                vr.raise_for_status()
+                if WORKER_MODE == "gradio":
+                    remote_file = await asyncio.to_thread(
+                        generate_gradio_scene,
+                        scene_prompt,
+                        req.aspect,
+                        previous_frame,
+                    )
+                    shutil.copy2(remote_file, local_path)
+                else:
+                    content = await generate_http_scene(
+                        http_client,
+                        scene_prompt,
+                        idx,
+                        req.aspect,
+                        job_id,
+                        previous_frame,
+                    )
+                    local_path.write_bytes(content)
             except Exception as e:
                 raise HTTPException(502, f"Worker GPU falló en escena {idx}: {e}")
 
-            local_path = job_dir / f"scene_{idx:02d}.mp4"
-            local_path.write_bytes(vr.content)
             scene_paths.append(local_path)
-
-            # La siguiente escena se condiciona con el último frame de esta escena.
             if idx < len(scenes):
-                last_frame = job_dir / f"scene_{idx:02d}_last.jpg"
-                extract_last_frame(local_path, last_frame)
-                previous_frame_b64 = base64.b64encode(last_frame.read_bytes()).decode("ascii")
+                previous_frame = job_dir / f"scene_{idx:02d}_last.jpg"
+                extract_last_frame(local_path, previous_frame)
 
     final_path = job_dir / "final.mp4"
     concat_videos(scene_paths, final_path)
-
     return {
         "job_id": job_id,
         "scenes": len(scenes),
         "continuity": len(scenes) > 1,
+        "worker_mode": WORKER_MODE,
         "video_url": f"/api/video/{job_id}",
     }
 
